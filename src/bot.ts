@@ -1,3 +1,7 @@
+import { resolve } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import EventEmitter from "node:events";
+import { randomUUID } from 'node:crypto';
 import { 
   createOpenAPI,
   createWebsocket, 
@@ -6,9 +10,9 @@ import {
   AvailableIntentsEventsEnum as Intents,
   IMessage,
   MessageToCreate,
+  IUser,
 } from "qq-guild-bot";
-import { resolve } from "path";
-import { mkdirSync, writeFileSync } from "fs";
+
 import { formatRollResult, parseRollOptions, roll } from "./dice";
 
 type GuildBotClient = ReturnType<typeof createOpenAPI>;
@@ -19,15 +23,21 @@ const {
   GUILD_MESSAGES,
 } = Intents;
 
+type Session = {
+  id: string;
+  diceType?: number;
+};
+
 type BotConfig = GuildBotConfig & {
   logDir?: string;
 };
 
-export default class Bot {
+export default class Bot extends EventEmitter {
   client: GuildBotClient;
   ws: WebSocketClient;
-
+  me?: IUser;
   logDir: string;
+  sessions: Record<string, Session | undefined> = {};
 
   constructor({
     appID,
@@ -35,10 +45,12 @@ export default class Bot {
     sandbox = false,
     logDir = resolve(process.cwd(), 'logs'),
   }: BotConfig) {
+    super();
+
     this.logDir = logDir;
 
     const config: GuildBotConfig = {
-      appID: appID,
+      appID,
       token,
       sandbox,
     };
@@ -58,6 +70,10 @@ export default class Bot {
     }
   
     this.client = createOpenAPI(config);
+    this.client.meApi.me().then(resp => {
+      this.me = resp.data;
+    });
+
     this.ws = createWebsocket(wsParam);
 
     this.ws.on(DIRECT_MESSAGE, ({eventType, eventId, msg}) => {
@@ -69,42 +85,128 @@ export default class Bot {
     });
   }
 
+  updateSession(channel: string, patch: Partial<Session>) {
+    const session: Session | undefined = this.sessions[channel];
+    if (session !== undefined) {
+      this.sessions[channel] = {
+        ...session,
+        ...patch,
+      };
+      console.info(`${channel} 会话信息更新：`, this.sessions[channel]);
+    }
+  }
+
   onDirectMessage(msg: IMessage) {
-    console.info(`接收到私信：`, msg);
     this.saveMessage('direct', msg);
 
+    const reply: MessageToCreate = {
+      msg_id: msg.id,
+    };
+
     if (msg.content.startsWith(".r")) {
+      console.info(`${msg.author.username}: ${msg.content}`);
       const command = msg.content.substring(1);
-      const reply = this.buildRollReply(msg.id, command);
+      reply.content = this.generateRollReplyContent(command);
+      console.info(`${this.me?.username}: ${reply}`);
+    }
+    
+    if (reply.content !== undefined && reply.content.length > 0) {
       this.client.directMessageApi.postDirectMessage(msg.guild_id, reply);
     }
   }
 
   onGuildMessages(msg: IMessage) {
-    console.info(`接收到私域频道消息：`, msg);
     this.saveMessage('guild', msg);
 
+    let session: Session | undefined = this.sessions[msg.channel_id];
+
+    const reply: MessageToCreate = {
+      msg_id: msg.id,
+      message_reference: {
+        message_id: msg.id,
+      },
+    };
+
+    if (msg.content === ".start") {
+      if (session === undefined) {
+        session = {
+          id: randomUUID(),
+          diceType: 6,
+        }
+        this.sessions[msg.channel_id] = session;
+        console.info(`${msg.channel_id} 开始会话：${session.id}`);
+        reply.content = `开始会话：${session.id}`;
+      } else {
+        reply.content = `会话已存在：${session.id}`;
+      }
+    }
+
+    if (msg.content === '.end') {
+      if (session === undefined) {
+        reply.content = `当前频道未开始会话`;
+        console.warn(`${msg.channel_id} 目前没有会话`);
+      } else {
+        reply.content = `结束会话：${session.id}`;
+        console.info(`${msg.channel_id} 结束会话：${session.id}`);
+        this.sessions[msg.channel_id] = undefined;
+      }
+    }
+
+    if (msg.content.startsWith(".set ")) {
+      if (session !== undefined) {
+        const params = msg.content.substring(5);
+        const tokens = params.split(" ").filter(p => p.length > 0);
+        if (tokens.length == 2) {
+          const [key, value] = tokens;
+          switch (key) {
+            case "dice":
+            case "dice-type":
+            case "dice-face":
+            case "dt":
+            case "df":
+              const face = parseInt(value);
+              if (!isNaN(face) && face >= 4 && face <=100) {
+                reply.content = `默认骰子类型设置为：D${face}`;
+                this.updateSession(msg.channel_id, {
+                  diceType: face,
+                });
+              } else {
+                reply.content = `无效的骰子面数：${value}`;
+              }
+              break;
+            default:
+              console.warn(`未知参数：`, key);
+              break;
+          }
+        }
+      }
+    }
+
     if (msg.content.startsWith(".r")) {
+      console.info(`${msg.channel_id} / ${msg.author.username}: ${msg.content}`);
       const command = msg.content.substring(1);
-      const reply = this.buildRollReply(msg.id, command);
+      reply.content = this.generateRollReplyContent(command, session);
+      console.info(`${msg.channel_id} / ${this.me?.username}: ${reply.content}`);
+    }
+
+    if (reply.content !== undefined && reply.content.length > 0) {
       this.client.messageApi.postMessage(msg.channel_id, reply);
     }
   }
 
-  buildRollReply(msg_id: string, command: string): MessageToCreate {
-    const options = parseRollOptions(command);
-    const reply: MessageToCreate = {
-      msg_id,
-    };
-
-    if (options == null) {
-      reply.content = `.rd命令格式错误！`;
-    } else {
+  generateRollReplyContent(
+    command: string, 
+    session: Session | undefined = undefined,
+  ): string {
+    try {
+      const defaultFace = session?.diceType;
+      const options = parseRollOptions(command, defaultFace);
       const result = roll(options);
-      reply.content = formatRollResult(result);
+      return formatRollResult(result);
     }
-
-    return reply;
+    catch (error) {
+      return `${error}`;
+    }
   }
 
   saveMessage(intent: string, msg: IMessage) {
@@ -115,11 +217,7 @@ export default class Bot {
       `${msg.guild_id}-${msg.channel_id}-${msg.author.id}-${msg.id}.json`,
     );
     const content = JSON.stringify(msg);
-
-    // console.debug(`正在创建报文目录：`, dir);
     mkdirSync(dir, { recursive: true });
-
-    // console.debug(`正在写入文件：`, path);
     writeFileSync(path, content);
   }
 }

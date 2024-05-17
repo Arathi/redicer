@@ -1,6 +1,6 @@
 {
   "name": "redicer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -9,13 +9,16 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "dependencies": {
+    "crypto-js": "^4.2.0",
     "dotenv": "^16.4.5",
+    "mathjs": "^12.4.2",
     "qq-guild-bot": "^2.9.5",
     "ws": "^8.17.0"
   },
   "devDependencies": {
+    "@types/crypto-js": "^4.2.2",
     "@types/node": "^20.12.12",
     "@types/ws": "^8.5.10",
     "ts-node": "^10.9.2",

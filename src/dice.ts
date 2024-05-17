@@ -1,9 +1,12 @@
-const ROLL_COMMAND_REGEX = /^r(\d+)?d(\d+)?([+|-]\d+)?$/;
+import { evaluate } from 'mathjs';
+
+const ROLL_COMMAND_REGEX = /^r(\d+)?d(\d+)?(([+|-]\d+)*)$/;
+const ADDITIONS_REGEX = /[+|-]\d+/g;
 
 export function roll({
-  face = 20,
-  amount = 1,
-  addition = 0,
+  amount,
+  face,
+  additions,
 }: RollOptions): RollResult {
   const results: number[] = [];
   for (let i = 0; i < amount; i++) {
@@ -11,58 +14,76 @@ export function roll({
     results.push(result);
   }
 
-  const sum = results.reduce((a, b) => a + b, addition);
+  const additionSum: number = evaluate(additions) ?? 0;
+  console.debug(`${additions} = ${additionSum}`);
+
+  const values = [...results];
+  const sum = values.reduce((a, b) => a + b, additionSum);
   return {
     face,
     amount,
-    addition,
+    additions,
+    values,
     sum,
-    results,
   };
 }
 
 export type RollOptions = {
-  face?: number, 
-  amount?: number, 
-  addition?: number,
+  amount: number,
+  face: number,
+  additions: string,
 };
 
 export type RollResult = {
-  face: number;
   amount: number;
-  addition: number;
+  face: number;
+  additions?: string;
+  values: number[];
   sum: number;
-  results: number[];
 };
 
-export function parseRollOptions(command: string): RollOptions | null {
+export function parseRollOptions(
+  command: string,
+  defaultFace: number | undefined = undefined,
+): RollOptions {
   const matcher = ROLL_COMMAND_REGEX.exec(command);
-  if (matcher == null) return null;
+  if (matcher == null) {
+    throw `rd命令格式错误！`;
+  }
 
   const inputAmount = parseInt(matcher[1]);
   const inputFace = parseInt(matcher[2]);
-  const inputAddition = parseInt(matcher[3]);
-  
-  let amount = isNaN(inputAmount) ? undefined : inputAmount;
-  let face = isNaN(inputFace) ? undefined : inputFace;
-  let addition = isNaN(inputAddition) ? undefined : inputAddition;
+  const additions = matcher[3];
+
+  let amount = 1;
+  if (!isNaN(inputAmount)) {
+    amount = inputAmount;
+  }
+  if (amount < 1 || amount > 100) {
+    throw `骰子数量过多！`;
+  }
+
+  let face = 20;
+  if (defaultFace !== undefined) {
+    face = defaultFace;
+  }
+  if (!isNaN(inputFace)) {
+    face = inputFace;
+  }
+  if (face < 4 || face > 100) {
+    throw `无效的骰子类型：D${face}`;
+  }
 
   return {
-    amount,
     face,
-    addition,
+    amount,
+    additions,
   }
 }
 
 export function formatRollResult(result: RollResult): string {
-  let addition = '';
-  if (result.addition > 0) {
-    addition = `+${result.addition}`;
-  } else if (result.addition < 0) {
-    addition = `${result.addition}`;
-  }
-
-  const command = `r${result.amount}d${result.face}${addition}`;
-  let values = result.results.join("+");
-  return `${command} = ${values}${addition} = ${result.sum}`;
+  let additions = result.additions ?? '';
+  const command = `r${result.amount}d${result.face}${additions}`;
+  let values = result.values.join("+");
+  return `${command} = ${values}${additions} = ${result.sum}`;
 }
