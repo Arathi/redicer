@@ -1,0 +1,10 @@
+# dotenv #
+.env
+.env.*
+!.env.sample
+
+# 依赖包 #
+node_modules/
+
+# 日志文件 #
+logs/
